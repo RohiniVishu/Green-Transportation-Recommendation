@@ -1,0 +1,244 @@
+#add walking and cycling.
+import tkinter as tk
+from tkinter import messagebox
+import googlemaps
+import requests
+import openai
+import random
+
+# Google Maps API Setup (replace with your API key)
+gmaps = googlemaps.Client(key='YOUR_GOOGLE_MAPS_API_KEY')
+
+# OpenWeatherMap API Setup (replace with your API key)
+weather_api_key = 'YOUR_OPENWEATHERMAP_API_KEY'
+weather_url = "http://api.openweathermap.org/data/2.5/weather"
+
+# OpenAI API Setup (replace with your API key)
+openai.api_key = 'YOUR_OPENAI_API_KEY'
+
+# Initialize user data
+user_points = 0
+user_level = 1
+user_achievements = []
+
+# Function to get the live location (using Google Maps Geolocation API)
+def get_live_location():
+    try:
+        # Fetch the current location of the user (latitude and longitude)
+        location = gmaps.geolocate()
+        latitude = location['location']['lat']
+        longitude = location['location']['lng']
+        return latitude, longitude
+    except Exception as e:
+        messagebox.showerror("Error", f"Error fetching live location: {e}")
+        return None, None
+
+# Transport recommendation logic
+def get_transport_recommendation(age, luggage, origin, destination):
+    # Get the weather condition from OpenWeatherMap API
+    weather_condition, temperature = get_weather(origin)
+
+    # Calculate the public transport info from Google Maps API
+    public_transport_info, public_transport_available = get_public_transport_info(origin, destination)
+
+    # Get the distance using Google Maps API
+    distance = calculate_distance(origin, destination)  # In km
+
+    # Logic based on age, luggage, distance, weather, and public transport availability
+    if age > 60 or luggage:  # If age > 60 or carrying luggage, suggest electric car
+        transport = "Electric Car"
+        transport_time = calculate_car_time(distance)  # Calculate car travel time
+    elif public_transport_available:  # Prefer public transport if it's available
+        transport = f"Public Transport (Estimated Time: {public_transport_info['total_time']} mins)"
+        transport_time = public_transport_info['total_time']
+    elif distance <= 10:
+        transport = "Electric Bike"
+        transport_time = calculate_bike_time(distance)  # Calculate bike travel time
+    elif 10 < distance <= 50:
+        transport = "Electric Car"
+        transport_time = calculate_car_time(distance)  # Calculate car travel time
+    else:
+        transport = "Electric Bus"
+        transport_time = calculate_bus_time(distance)  # Calculate bus travel time
+
+    # Apply gamification logic for points
+    transport_points = calculate_points(transport)
+
+    # Update user points
+    update_user_points(transport_points)
+
+    # Get feedback from OpenAI (fun interaction)
+    openai_feedback = get_openai_feedback(transport)
+
+    return transport, weather_condition, temperature, transport_points, transport_time, openai_feedback, public_transport_info
+
+def calculate_distance(origin, destination):
+    # Get the distance between origin and destination using Google Maps API
+    result = gmaps.distance_matrix(origin, destination)
+    distance = result['rows'][0]['elements'][0]['distance']['value']  # Distance in meters
+    return distance / 1000  # Convert to kilometers
+
+def get_weather(latitude, longitude):
+    # Get the weather data from OpenWeatherMap API
+    params = {
+        'lat': latitude,
+        'lon': longitude,
+        'appid': weather_api_key,
+        'units': 'metric'  # Temperature in Celsius
+    }
+    response = requests.get(weather_url, params=params)
+    data = response.json()
+    
+    weather_condition = data['weather'][0]['description']  # Weather condition (e.g., sunny, rain)
+    temperature = data['main']['temp']  # Temperature in Celsius
+    return weather_condition, temperature
+
+def get_public_transport_info(origin, destination):
+    # Get the public transport information (buses and metros) using Google Maps API's Directions API (transit mode)
+    result = gmaps.directions(origin, destination, mode="transit", departure_time="now")
+
+    # Initialize data to return
+    transport_info = {
+        'total_time': 0,
+        'buses': [],
+        'metros': []
+    }
+
+    # Check if the result contains valid transit data
+    if result and 'legs' in result[0]:
+        # Get total time for the trip
+        transport_info['total_time'] = int(result[0]['legs'][0]['duration']['value'] / 60)  # Convert seconds to minutes
+
+        # Extract steps (transit information)
+        for step in result[0]['legs'][0]['steps']:
+            if 'transit_details' in step:
+                # For buses and metro
+                transit_details = step['transit_details']
+                line_name = transit_details.get('line', {}).get('name', '')
+                departure_time = transit_details.get('departure_time', {}).get('text', 'Unknown')
+                arrival_time = transit_details.get('arrival_time', {}).get('text', 'Unknown')
+                
+                if 'bus' in transit_details.get('line', {}).get('vehicle', {}).get('type', '').lower():
+                    transport_info['buses'].append({
+                        'name': line_name,
+                        'departure_time': departure_time,
+                        'arrival_time': arrival_time
+                    })
+                elif 'rail' in transit_details.get('line', {}).get('vehicle', {}).get('type', '').lower():
+                    transport_info['metros'].append({
+                        'name': line_name,
+                        'departure_time': departure_time,
+                        'arrival_time': arrival_time
+                    })
+
+    return transport_info, bool(transport_info['buses'] or transport_info['metros'])
+
+def calculate_bike_time(distance):
+    # Assume average speed of electric bike is 20 km/h
+    bike_speed = 20  # km/h
+    return distance / bike_speed * 60  # Convert hours to minutes
+
+def calculate_car_time(distance):
+    # Assume average speed of electric car is 60 km/h
+    car_speed = 60  # km/h
+    return distance / car_speed * 60  # Convert hours to minutes
+
+def calculate_bus_time(distance):
+    # Assume average speed of electric bus is 40 km/h
+    bus_speed = 40  # km/h
+    return distance / bus_speed * 60  # Convert hours to minutes
+
+def calculate_points(transport):
+    # Points are based on the eco-friendliness of the transport
+    if transport == "Electric Bike":
+        return 10  # More points for green choices
+    elif transport == "Electric Car":
+        return 5
+    elif "Public Transport" in transport:
+        return 7  # Moderate points for public transport
+    else:  # Electric Bus
+        return 3
+
+def update_user_points(points):
+    global user_points, user_level, user_achievements
+    user_points += points
+
+    # Level up if user reaches a new threshold of points
+    if user_points >= 50 and user_level == 1:
+        user_level = 2
+        user_achievements.append("Level 2 unlocked!")
+    elif user_points >= 100 and user_level == 2:
+        user_level = 3
+        user_achievements.append("Level 3 unlocked!")
+
+def get_openai_feedback(transport):
+    # OpenAI feedback based on the user's transport choice
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are an eco-friendly transport assistant."},
+            {"role": "user", "content": f"Recommend me a green transport option. I want to use {transport}."}
+        ]
+    )
+    return response['choices'][0]['message']['content']
+
+# Submit function to display the recommendation
+def submit():
+    try:
+        # Get the live location for origin
+        origin_lat, origin_lon = get_live_location()
+        if origin_lat is None or origin_lon is None:
+            return
+
+        # Get user input for destination
+        destination = (float(destination_lat_entry.get()), float(destination_lon_entry.get()))
+
+        # Get transport recommendation based on inputs
+        transport, weather_condition, temperature, transport_points, transport_time, openai_feedback, public_transport_info = get_transport_recommendation(0, 0, (origin_lat, origin_lon), destination)
+
+        # Show the result in the label
+        result_label.config(text=f"Recommended Transport: {transport}\nWeather: {weather_condition}, {temperature}°C\nTravel Time: {transport_time} mins\nPoints Earned: {transport_points}\nFeedback: {openai_feedback}")
+
+        # Display available buses and metro info
+        if public_transport_info['buses']:
+            bus_info = "\n".join([f"{bus['name']} (Departure: {bus['departure_time']}, Arrival: {bus['arrival_time']})" for bus in public_transport_info['buses']])
+            result_label.config(text=result_label.cget("text") + f"\nAvailable Buses: {bus_info}")
+        if public_transport_info['metros']:
+            metro_info = "\n".join([f"{metro['name']} (Departure: {metro['departure_time']}, Arrival: {metro['arrival_time']})" for metro in public_transport_info['metros']])
+            result_label.config(text=result_label.cget("text") + f"\nAvailable Metros: {metro_info}")
+
+        # Display updated user points and level
+        points_label.config(text=f"Your Points: {user_points}\nYour Level: {user_level}")
+        achievements_label.config(text="Achievements: " + ", ".join(user_achievements))
+
+    except ValueError:
+        messagebox.showerror("Input Error", "Please enter valid numeric values.")
+
+# Create the main window
+root = tk.Tk()
+root.title("AI-Generated Green Transport Recommendations with Gamification")
+
+# Create and place labels and entries
+tk.Label(root, text="Enter destination (latitude, longitude):").grid(row=3, column=0, padx=10, pady=10)
+destination_lat_entry = tk.Entry(root)
+destination_lat_entry.grid(row=3, column=1, padx=10, pady=10)
+destination_lon_entry = tk.Entry(root)
+destination_lon_entry.grid(row=3, column=2, padx=10, pady=10)
+
+# Submit button
+submit_button = tk.Button(root, text="Get Transport Recommendation", command=submit)
+submit_button.grid(row=4, column=0, columnspan=3, pady=20)
+
+# Result label
+result_label = tk.Label(root, text="Recommended Transport: ", font=("Arial", 12))
+result_label.grid(row=5, column=0, columnspan=3, pady=10)
+
+# Points and achievements label
+points_label = tk.Label(root, text="Your Points: 0\nYour Level: 1", font=("Arial", 12))
+points_label.grid(row=6, column=0, columnspan=3, pady=10)
+
+achievements_label = tk.Label(root, text="Achievements: ", font=("Arial", 12))
+achievements_label.grid(row=7, column=0, columnspan=3, pady=10)
+
+# Run the GUI
+root.mainloop()
